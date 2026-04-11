@@ -53,5 +53,5 @@ public static class Constants
     /// <summary>
     /// Application version
     /// </summary>
-    public const string Version = "1.0.1";
+    public const string Version = "1.0.2";
 }

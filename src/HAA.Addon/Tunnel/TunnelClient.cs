@@ -26,7 +26,6 @@ public class TunnelClient : IAsyncDisposable
 
     private ClientWebSocket? _webSocket;
     private CancellationTokenSource? _cts;
-    private Task? _heartbeatTask;
     private int _reconnectAttempts;
 
     public bool IsConnected => _webSocket?.State == WebSocketState.Open;
@@ -123,10 +122,8 @@ public class TunnelClient : IAsyncDisposable
         _reconnectAttempts = 0; // Reset on successful connection
         _logger.LogInformation("Authenticated as {Subdomain}, tunnel is active", Subdomain);
 
-        // Start heartbeat
-        _heartbeatTask = RunHeartbeatLoopAsync(cancellationToken);
-
-        // Run receive loop (blocking until disconnected)
+        // Run receive loop (blocking until disconnected).
+        // The addon doesn't send heartbeats; it only responds to server heartbeats in HandleHeartbeatAsync.
         await RunReceiveLoopAsync(cancellationToken);
     }
 
@@ -557,13 +554,16 @@ public class TunnelClient : IAsyncDisposable
         }
         finally
         {
-            _activeWebSockets.TryRemove(connectionId, out _);
+            // TryRemove returns false if HandleWebSocketCloseAsync already cleaned up -
+            // in that case the server initiated the close and already has final state,
+            // so we must not send a second (unsolicited) close message.
+            var wasActive = _activeWebSockets.TryRemove(connectionId, out _);
             _webSocketFragmentState.TryRemove(connectionId, out _);
             try { await wsClient.CloseAsync(1000, "Connection closed"); } catch { }
             wsClient.Dispose();
 
-            // Notify server that this WebSocket connection is closed (if not already sent)
-            if (!closeSent)
+            // Notify server only if we owned the cleanup and haven't sent a close yet
+            if (!closeSent && wasActive)
             {
                 try
                 {
@@ -683,16 +683,6 @@ public class TunnelClient : IAsyncDisposable
 
     #endregion
 
-    private async Task RunHeartbeatLoopAsync(CancellationToken cancellationToken)
-    {
-        // Client doesn't send heartbeats, only responds to server heartbeats
-        // This task just monitors the connection
-        while (!cancellationToken.IsCancellationRequested && IsConnected)
-        {
-            await Task.Delay(TimeSpan.FromSeconds(10), cancellationToken);
-        }
-    }
-
     private async Task SendMessageAsync(TunnelMessage message, CancellationToken cancellationToken)
     {
         await _sendLock.WaitAsync(cancellationToken);
@@ -770,11 +760,6 @@ public class TunnelClient : IAsyncDisposable
             ws.Dispose();
         }
         _activeWebSockets.Clear();
-
-        if (_heartbeatTask != null)
-        {
-            await _heartbeatTask.ConfigureAwait(ConfigureAwaitOptions.SuppressThrowing);
-        }
 
         if (_webSocket != null)
         {

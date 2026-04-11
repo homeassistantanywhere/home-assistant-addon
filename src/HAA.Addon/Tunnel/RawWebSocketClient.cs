@@ -75,10 +75,15 @@ public class RawWebSocketClient : IDisposable
             var key = Convert.ToBase64String(RandomNumberGenerator.GetBytes(16));
             var path = uri.PathAndQuery;
 
-            // Build request with standard headers
+            // Build request with standard headers.
+            // Omit the default port from the Host header (RFC 7230 §5.4) so strict parsers
+            // like aiohttp don't treat "homeassistant:443" as a non-canonical authority.
+            var isDefaultPort = (uri.Scheme == "wss" && port == 443) || (uri.Scheme == "ws" && port == 80);
+            var hostHeader = isDefaultPort ? host : $"{host}:{port}";
+
             var requestBuilder = new StringBuilder();
             requestBuilder.Append($"GET {path} HTTP/1.1\r\n");
-            requestBuilder.Append($"Host: {host}:{port}\r\n");
+            requestBuilder.Append($"Host: {hostHeader}\r\n");
             requestBuilder.Append($"Upgrade: websocket\r\n");
             requestBuilder.Append($"Connection: Upgrade\r\n");
             requestBuilder.Append($"Sec-WebSocket-Key: {key}\r\n");
@@ -95,6 +100,15 @@ public class RawWebSocketClient : IDisposable
                         headerName.Equals("Connection", StringComparison.OrdinalIgnoreCase) ||
                         headerName.Equals("Origin", StringComparison.OrdinalIgnoreCase) ||
                         headerName.StartsWith("Sec-WebSocket-", StringComparison.OrdinalIgnoreCase) ||
+                        // Skip headers that we emit ourselves below - forwarding these would
+                        // produce duplicates that aiohttp rejects with "HTTP/1.0 400 Bad Request"
+                        headerName.Equals("User-Agent", StringComparison.OrdinalIgnoreCase) ||
+                        headerName.Equals("Pragma", StringComparison.OrdinalIgnoreCase) ||
+                        headerName.Equals("Cache-Control", StringComparison.OrdinalIgnoreCase) ||
+                        // A GET WebSocket upgrade has no body; forwarding these confuses strict parsers
+                        headerName.Equals("Content-Length", StringComparison.OrdinalIgnoreCase) ||
+                        headerName.Equals("Transfer-Encoding", StringComparison.OrdinalIgnoreCase) ||
+                        headerName.Equals("Expect", StringComparison.OrdinalIgnoreCase) ||
                         // Skip headers that could cause issues
                         headerName.StartsWith("X-Forwarded-", StringComparison.OrdinalIgnoreCase) ||
                         headerName.Equals("X-Real-IP", StringComparison.OrdinalIgnoreCase))
@@ -107,7 +121,7 @@ public class RawWebSocketClient : IDisposable
                 }
             }
 
-            requestBuilder.Append($"Origin: http://{host}:{port}\r\n");
+            requestBuilder.Append($"Origin: {(useSsl ? "https" : "http")}://{hostHeader}\r\n");
             requestBuilder.Append($"User-Agent: HAA-Addon/{HAA.Shared.Constants.Version}\r\n");
             requestBuilder.Append($"Pragma: no-cache\r\n");
             requestBuilder.Append($"Cache-Control: no-cache\r\n");
@@ -150,7 +164,14 @@ public class RawWebSocketClient : IDisposable
 
             if (!response.StartsWith("HTTP/1.1 101"))
             {
-                throw new Exception($"WebSocket handshake failed: {response.Split('\r')[0]}");
+                // Read a bounded chunk of the response body so we can surface the real error
+                // (aiohttp, nginx, etc. put the actual complaint in the body, not the status line).
+                var bodyPreview = await TryReadErrorBodyAsync(stream, response, cancellationToken);
+                var statusLine = response.Split('\r')[0];
+                var detail = string.IsNullOrEmpty(bodyPreview)
+                    ? statusLine
+                    : $"{statusLine} — {bodyPreview}";
+                throw new Exception($"WebSocket handshake failed: {detail}");
             }
 
             // Verify the accept key
@@ -391,6 +412,55 @@ public class RawWebSocketClient : IDisposable
         catch
         {
             // Ignore errors during close
+        }
+    }
+
+    /// <summary>
+    /// Attempts to read a small chunk of the error response body so we can log what the
+    /// upstream server actually complained about. Parses Content-Length from the response
+    /// headers if present, otherwise reads up to 1 KB opportunistically.
+    /// </summary>
+    private static async Task<string> TryReadErrorBodyAsync(Stream stream, string headerBlock, CancellationToken cancellationToken)
+    {
+        try
+        {
+            int bytesToRead = 1024;
+            var clIdx = headerBlock.IndexOf("Content-Length:", StringComparison.OrdinalIgnoreCase);
+            if (clIdx >= 0)
+            {
+                var eol = headerBlock.IndexOf("\r\n", clIdx, StringComparison.Ordinal);
+                if (eol > clIdx &&
+                    int.TryParse(headerBlock.AsSpan(clIdx + "Content-Length:".Length, eol - clIdx - "Content-Length:".Length).Trim(), out var cl))
+                {
+                    bytesToRead = Math.Min(cl, 1024);
+                }
+            }
+
+            if (bytesToRead <= 0) return string.Empty;
+
+            var buf = new byte[bytesToRead];
+            var total = 0;
+            using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+            timeoutCts.CancelAfter(TimeSpan.FromSeconds(2));
+            try
+            {
+                while (total < bytesToRead)
+                {
+                    var read = await stream.ReadAsync(buf.AsMemory(total, bytesToRead - total), timeoutCts.Token);
+                    if (read == 0) break;
+                    total += read;
+                }
+            }
+            catch (OperationCanceledException) { /* stop on timeout, return what we got */ }
+
+            if (total == 0) return string.Empty;
+            var text = Encoding.UTF8.GetString(buf, 0, total).Trim();
+            // Collapse whitespace so log lines stay single-line
+            return text.Replace('\r', ' ').Replace('\n', ' ');
+        }
+        catch
+        {
+            return string.Empty;
         }
     }
 
