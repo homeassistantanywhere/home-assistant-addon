@@ -3,6 +3,7 @@ set -e
 
 CONFIG_PATH=/data/options.json
 HA_CONFIG_PATH=/homeassistant/configuration.yaml
+HA_STORAGE_HTTP=/homeassistant/.storage/http
 
 # Read configuration
 CONNECTION_KEY=$(jq -r '.connection_key' $CONFIG_PATH)
@@ -25,9 +26,22 @@ echo "Auto-detecting Home Assistant URL..."
 HA_PORT=8123
 HA_SSL=false
 
-# Try to read from Home Assistant configuration
-if [ -f "$HA_CONFIG_PATH" ]; then
-    # Read port from configuration (default 8123)
+# Since HA 2026.8 the http settings live in .storage/http (managed via the UI)
+# and take precedence over any http block left in configuration.yaml
+if [ -f "$HA_STORAGE_HTTP" ]; then
+    CONFIGURED_PORT=$(jq -r '.data.server_port // ""' "$HA_STORAGE_HTTP" 2>/dev/null)
+    if [ -n "$CONFIGURED_PORT" ] && [ "$CONFIGURED_PORT" != "null" ]; then
+        HA_PORT=$CONFIGURED_PORT
+    fi
+
+    HAS_SSL_CERT=$(jq -r '.data.ssl_certificate // ""' "$HA_STORAGE_HTTP" 2>/dev/null)
+    HAS_SSL_KEY=$(jq -r '.data.ssl_key // ""' "$HA_STORAGE_HTTP" 2>/dev/null)
+    if [ -n "$HAS_SSL_CERT" ] && [ "$HAS_SSL_CERT" != "null" ] && \
+       [ -n "$HAS_SSL_KEY" ] && [ "$HAS_SSL_KEY" != "null" ]; then
+        HA_SSL=true
+    fi
+elif [ -f "$HA_CONFIG_PATH" ]; then
+    # Pre-2026.8: read the http block from configuration.yaml
     CONFIGURED_PORT=$(yq '.http.server_port // ""' "$HA_CONFIG_PATH" 2>/dev/null)
     if [ -n "$CONFIGURED_PORT" ] && [ "$CONFIGURED_PORT" != "null" ]; then
         HA_PORT=$CONFIGURED_PORT

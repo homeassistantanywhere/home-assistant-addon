@@ -17,14 +17,16 @@ RUN apk add --no-cache \
 # Download and install .NET Runtime
 ARG DOTNET_VERSION=8.0.11
 ARG TARGETARCH
-RUN if [ "$TARGETARCH" = "amd64" ]; then \
-        DOTNET_ARCH="x64"; \
-    elif [ "$TARGETARCH" = "arm64" ]; then \
-        DOTNET_ARCH="arm64"; \
-    elif [ "$TARGETARCH" = "arm" ]; then \
-        DOTNET_ARCH="arm"; \
-    fi && \
-    wget -O dotnet.tar.gz "https://dotnetcli.azureedge.net/dotnet/Runtime/${DOTNET_VERSION}/dotnet-runtime-${DOTNET_VERSION}-linux-musl-${DOTNET_ARCH}.tar.gz" && \
+# TARGETARCH is only set by BuildKit (CI); fall back to uname -m for
+# local Supervisor builds that use the legacy builder
+RUN ARCH="${TARGETARCH:-$(uname -m)}" && \
+    case "$ARCH" in \
+        amd64|x86_64)  DOTNET_ARCH="x64" ;; \
+        arm64|aarch64) DOTNET_ARCH="arm64" ;; \
+        arm|armv7l)    DOTNET_ARCH="arm" ;; \
+        *) echo "Unsupported architecture: $ARCH" && exit 1 ;; \
+    esac && \
+    wget -O dotnet.tar.gz "https://builds.dotnet.microsoft.com/dotnet/Runtime/${DOTNET_VERSION}/dotnet-runtime-${DOTNET_VERSION}-linux-musl-${DOTNET_ARCH}.tar.gz" && \
     mkdir -p /usr/share/dotnet && \
     tar -oxzf dotnet.tar.gz -C /usr/share/dotnet && \
     rm dotnet.tar.gz && \
