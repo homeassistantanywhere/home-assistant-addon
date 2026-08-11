@@ -1,6 +1,6 @@
 name: "Home Access Anywhere"
 description: "Access your Home Assistant from anywhere via homeaccessanywhere.com"
-version: "1.0.3"
+version: "1.0.4"
 slug: "haa"
 url: "https://homeaccessanywhere.com"
 image: ghcr.io/homeaccessanywhere/haa-addon-{arch}
@@ -9,6 +9,7 @@ arch:
   - aarch64
   - armv7
 init: false
+hassio_api: true
 homeassistant_api: true
 # Increase memory limit for heavy WebSocket traffic (like Code Server)
 # 256KB frames + base64 encoding + JSON overhead needs headroom
