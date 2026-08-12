@@ -31,14 +31,18 @@ DETECTED_VIA=""
 # Preferred: ask the Supervisor API, works on every HA version regardless of
 # where the http settings are stored (requires hassio_api: true)
 if [ -n "$SUPERVISOR_TOKEN" ]; then
-    CORE_INFO=$(curl -sf -m 10 -H "Authorization: Bearer ${SUPERVISOR_TOKEN}" http://supervisor/core/info 2>/dev/null || true)
+    CORE_INFO=$(curl -s -m 10 -H "Authorization: Bearer ${SUPERVISOR_TOKEN}" http://supervisor/core/info 2>/dev/null || true)
     API_PORT=$(echo "$CORE_INFO" | jq -r '.data.port // ""' 2>/dev/null || true)
     API_SSL=$(echo "$CORE_INFO" | jq -r '.data.ssl // ""' 2>/dev/null || true)
     if [ -n "$API_PORT" ] && [ "$API_PORT" != "null" ]; then
         HA_PORT=$API_PORT
         [ "$API_SSL" = "true" ] && HA_SSL=true
         DETECTED_VIA="Supervisor API"
+    else
+        echo "Supervisor API detection failed, response: ${CORE_INFO:-<none>}"
     fi
+else
+    echo "SUPERVISOR_TOKEN not set, skipping Supervisor API detection"
 fi
 
 # Since HA 2026.8 the http settings live in .storage/http (managed via the UI)
@@ -47,13 +51,15 @@ if [ -n "$DETECTED_VIA" ]; then
     :
 elif [ -f "$HA_STORAGE_HTTP" ]; then
     DETECTED_VIA=".storage/http"
-    CONFIGURED_PORT=$(jq -r '.data.server_port // ""' "$HA_STORAGE_HTTP" 2>/dev/null || true)
+    # Settings live under data.stable (or data.pending while a change awaits
+    # confirmation, HA already runs on those); plain data.* is a fallback
+    CONFIGURED_PORT=$(jq -r '.data.pending.server_port // .data.stable.server_port // .data.server_port // ""' "$HA_STORAGE_HTTP" 2>/dev/null || true)
     if [ -n "$CONFIGURED_PORT" ] && [ "$CONFIGURED_PORT" != "null" ]; then
         HA_PORT=$CONFIGURED_PORT
     fi
 
-    HAS_SSL_CERT=$(jq -r '.data.ssl_certificate // ""' "$HA_STORAGE_HTTP" 2>/dev/null || true)
-    HAS_SSL_KEY=$(jq -r '.data.ssl_key // ""' "$HA_STORAGE_HTTP" 2>/dev/null || true)
+    HAS_SSL_CERT=$(jq -r '.data.pending.ssl_certificate // .data.stable.ssl_certificate // .data.ssl_certificate // ""' "$HA_STORAGE_HTTP" 2>/dev/null || true)
+    HAS_SSL_KEY=$(jq -r '.data.pending.ssl_key // .data.stable.ssl_key // .data.ssl_key // ""' "$HA_STORAGE_HTTP" 2>/dev/null || true)
     if [ -n "$HAS_SSL_CERT" ] && [ "$HAS_SSL_CERT" != "null" ] && \
        [ -n "$HAS_SSL_KEY" ] && [ "$HAS_SSL_KEY" != "null" ]; then
         HA_SSL=true

@@ -1,6 +1,6 @@
 name: "Home Access Anywhere"
 description: "Access your Home Assistant from anywhere via homeaccessanywhere.com"
-version: "1.0.4"
+version: "1.0.5"
 slug: "haa"
 url: "https://homeaccessanywhere.com"
 image: ghcr.io/homeaccessanywhere/haa-addon-{arch}
